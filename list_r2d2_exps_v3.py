@@ -11,12 +11,7 @@ R2D2_DB_ROOTS = {
     'discover-mil-gnu':   '/css/jcsda/s2127/r2d2-experiments-nccs/',
     'discover-gmao-intel': '/discover/nobackup/projects/gmao/swell/r2d2-experiments/',
 }
-DATA_STORES = {
-    'discover-mil-gnu':   'r2d2-experiments-nccs',
-    'discover-gmao-intel': 'r2d2-experiments',
-}
 r2d2_db_root = R2D2_DB_ROOTS[compute_host]
-data_store = DATA_STORES[compute_host]
 
 
 def get_experiment_file_info(model, experiment, item):
@@ -24,9 +19,9 @@ def get_experiment_file_info(model, experiment, item):
     r2d2_db = r2d2_db_root
 
     if item == "feedback":
-        files = r2d2.search(experiment=experiment, item=item, data_store=data_store, include_item_index=True)
+        files = r2d2.search(experiment=experiment, item=item, compute_host=compute_host, include_item_index=True)
     else:
-        files = r2d2.search(model=model, experiment=experiment, item=item, data_store=data_store, include_item_index=True)
+        files = r2d2.search(model=model, experiment=experiment, item=item, compute_host=compute_host, include_item_index=True)
 
     total_size = 0
     for f in files:
@@ -45,7 +40,7 @@ def get_experiment_file_info(model, experiment, item):
 
 def collect_experiments_for_user(user, csv_rows):
     """Collect experiment info for a specific user and append to csv_rows list."""
-    experiments = r2d2.search(user=user, item='experiment')
+    experiments = r2d2.search(user=user, item='experiment', compute_host=compute_host)
 
     if not experiments:
         print(f"No experiments found for user '{user}'.")
