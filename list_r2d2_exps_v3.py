@@ -19,9 +19,9 @@ def get_experiment_file_info(model, experiment, item):
     r2d2_db = r2d2_db_root
 
     if item == "feedback":
-        files = r2d2.search(experiment=experiment, item=item, compute_host=compute_host, include_item_index=True)
+        files = r2d2.search(experiment=experiment, item=item, include_item_index=True)
     else:
-        files = r2d2.search(model=model, experiment=experiment, item=item, compute_host=compute_host, include_item_index=True)
+        files = r2d2.search(model=model, experiment=experiment, item=item, include_item_index=True)
 
     total_size = 0
     for f in files:
