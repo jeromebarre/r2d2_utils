@@ -3,10 +3,20 @@ import r2d2
 import os
 import csv
 
+# Select the compute host here
+compute_host = 'discover-mil-gnu'
+# compute_host = 'discover-gmao-intel'
+
+R2D2_DB_ROOTS = {
+    'discover-mil-gnu':   '/css/jcsda/s2127/r2d2-experiments-nccs/',
+    'discover-gmao-intel': '/discover/nobackup/projects/gmao/swell/r2d2-experiments/',
+}
+r2d2_db_root = R2D2_DB_ROOTS[compute_host]
+
 
 def get_experiment_file_info(model, experiment, item):
     """Return count and total size (in GB) of files for a given experiment and item."""
-    r2d2_db = '/css/jcsda/s2127/r2d2-experiments-nccs/'
+    r2d2_db = r2d2_db_root
 
     if item == "feedback":
         files = r2d2.search(experiment=experiment, item=item, include_item_index=True)
