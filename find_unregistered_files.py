@@ -49,57 +49,94 @@ DATA_ITEMS = {
 
 SCAN_FIELDNAMES = ['filepath', 'item', 'date', 'index', 'extension', 'size_bytes']
 ORPHAN_FIELDNAMES = ['filepath', 'item', 'date', 'index', 'extension', 'size_bytes', 'size_mb', 'size_gb']
+SYMLINK_FIELDNAMES = ['filepath', 'item', 'date', 'index', 'extension', 'target', 'target_exists']
 
 
 # ---------------------------------------------------------------------------
 # Phase 1 – filesystem scan
 # ---------------------------------------------------------------------------
 
-def scan_data_store(basedir: str, data_store: str, files_csv: str):
-    """Walk the data store and write every leaf file to files_csv."""
+def scan_data_store(basedir: str, data_store: str, files_csv: str, symlinks_csv: str = None):
+    """Walk the data store and write every leaf file to files_csv.
+
+    Only regular (non-symlink) files are written to files_csv.
+    All symlinks (live or dangling) are written to symlinks_csv (if provided).
+    """
     root = os.path.join(basedir, data_store)
     if not os.path.isdir(root):
         raise FileNotFoundError(f'Data store directory not found: {root}')
 
     logger.info(f'Scanning: {root}')
     count = 0
+    symlink_count = 0
 
-    with open(files_csv, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=SCAN_FIELDNAMES)
-        writer.writeheader()
+    symlink_writer = None
+    symlink_f = None
+    if symlinks_csv:
+        symlink_f = open(symlinks_csv, 'w', newline='')
+        symlink_writer = csv.DictWriter(symlink_f, fieldnames=SYMLINK_FIELDNAMES)
+        symlink_writer.writeheader()
 
-        for item_entry in os.scandir(root):
-            if not item_entry.is_dir() or item_entry.name not in DATA_ITEMS:
-                continue
-            item_name = item_entry.name
+    try:
+        with open(files_csv, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=SCAN_FIELDNAMES)
+            writer.writeheader()
 
-            for date_entry in os.scandir(item_entry.path):
-                if not date_entry.is_dir():
+            for item_entry in os.scandir(root):
+                if not item_entry.is_dir() or item_entry.name not in DATA_ITEMS:
                     continue
-                date_str = date_entry.name
+                item_name = item_entry.name
 
-                for file_entry in os.scandir(date_entry.path):
-                    if not file_entry.is_file():
+                for date_entry in os.scandir(item_entry.path):
+                    if not date_entry.is_dir():
                         continue
-                    base, ext = os.path.splitext(file_entry.name)
-                    try:
-                        index = int(base)
-                    except ValueError:
-                        logger.warning(f'Skipping unexpected filename: {file_entry.path}')
-                        continue
-                    writer.writerow({
-                        'filepath':   file_entry.path,
-                        'item':       item_name,
-                        'date':       date_str,
-                        'index':      index,
-                        'extension':  ext.lstrip('.'),
-                        'size_bytes': file_entry.stat().st_size,
-                    })
-                    count += 1
-                    if count % 10000 == 0:
-                        logger.info(f'  {count} files scanned ...')
+                    date_str = date_entry.name
 
-    logger.info(f'Scan complete: {count} files written to {files_csv}')
+                    for file_entry in os.scandir(date_entry.path):
+                        base, ext = os.path.splitext(file_entry.name)
+                        try:
+                            index = int(base)
+                        except ValueError:
+                            logger.warning(f'Skipping unexpected filename: {file_entry.path}')
+                            continue
+
+                        # Symlink (live or dangling) → symlinks CSV only
+                        if file_entry.is_symlink():
+                            symlink_count += 1
+                            if symlink_writer:
+                                symlink_writer.writerow({
+                                    'filepath':      file_entry.path,
+                                    'item':          item_name,
+                                    'date':          date_str,
+                                    'index':         index,
+                                    'extension':     ext.lstrip('.'),
+                                    'target':        os.readlink(file_entry.path),
+                                    'target_exists': file_entry.is_file(follow_symlinks=True),
+                                })
+                            continue
+
+                        # Regular file only
+                        if not file_entry.is_file(follow_symlinks=False):
+                            continue
+                        size_bytes = file_entry.stat(follow_symlinks=False).st_size
+                        writer.writerow({
+                            'filepath':   file_entry.path,
+                            'item':       item_name,
+                            'date':       date_str,
+                            'index':      index,
+                            'extension':  ext.lstrip('.'),
+                            'size_bytes': size_bytes,
+                        })
+                        count += 1
+                        if count % 10000 == 0:
+                            logger.info(f'  {count} files scanned ...')
+    finally:
+        if symlink_f:
+            symlink_f.close()
+
+    logger.info(f'Scan complete: {count} regular files written to {files_csv}')
+    if symlinks_csv:
+        logger.info(f'Symlinks: {symlink_count} written to {symlinks_csv}')
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +213,8 @@ def main():
                         help='Name of the data store directory (required for --scan).')
     parser.add_argument('--files-csv', default='files.csv',
                         help='Files CSV written by --scan / read by --check. Default: files.csv')
+    parser.add_argument('--symlinks-csv', default=None,
+                        help='CSV to write all symlinks (live and dangling) found during --scan. Optional.')
     parser.add_argument('--output', default='orphans.csv',
                         help='Orphans output CSV (used by --check). Default: orphans.csv')
     args = parser.parse_args()
@@ -191,7 +230,7 @@ def main():
             logger.error(f'basedir does not exist: {basedir}')
             sys.exit(1)
         try:
-            scan_data_store(basedir, args.data_store, args.files_csv)
+            scan_data_store(basedir, args.data_store, args.files_csv, args.symlinks_csv)
         except FileNotFoundError as e:
             logger.error(str(e))
             sys.exit(1)
