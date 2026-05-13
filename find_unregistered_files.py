@@ -1,25 +1,32 @@
 """Find unregistered (orphaned) files in an r2d2 local data store.
 
-Strategy:
-  1. Walk the data store directory and list all files.
-  2. Parse each file path to extract the item type, date, and database index.
-  3. Query r2d2 data_register to check if each index is registered.
-  4. Write unregistered files and their sizes to a CSV report.
+Two-phase approach:
 
-Requires direct database access (server-side or same MYSQL_* env vars as the server).
+  Phase 1 (--scan):  Walk the data store filesystem and write a CSV of all files found.
+                     This only needs to be run once per data store (may be slow for large stores).
+
+  Phase 2 (--check): Read the scan CSV and check each file against the r2d2 API.
+                     Writes a new CSV listing only orphaned (unregistered) files.
+                     Requires R2D2_* env vars (R2D2_USER, R2D2_HOST, R2D2_COMPILER, R2D2_API_KEY).
 
 Usage:
-    # Discover data store (nccs-gmao partition):
-    python find_unregistered_files.py \
-        --basedir /discover/nobackup/projects/gmao/swell \
-        --data-store r2d2-experiments-nccs-gmao \
-        --output unregistered_gmao.csv
+    # Step 1 – scan the filesystem (run once):
+    python find_unregistered_files.py --scan \\
+        --basedir /css/jcsda/s2127 \\
+        --data-store r2d2-experiments-nccs \\
+        --files-csv files_nccs.csv
 
-    # NCCS data store:
-    python find_unregistered_files.py \
-        --basedir /css/jcsda/s2127 \
-        --data-store r2d2-experiments-nccs \
-        --output unregistered_nccs.csv
+    # Step 2 – check against r2d2:
+    python find_unregistered_files.py --check \\
+        --files-csv files_nccs.csv \\
+        --output orphans_nccs.csv
+
+    # Or run both phases in one go:
+    python find_unregistered_files.py --scan --check \\
+        --basedir /css/jcsda/s2127 \\
+        --data-store r2d2-experiments-nccs \\
+        --files-csv files_nccs.csv \\
+        --output orphans_nccs.csv
 
 File path structure on disk:
     <basedir>/<data_store>/<item>/<date>/<index>.<extension>
@@ -34,180 +41,166 @@ import sys
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Data items that write files to disk
+# Items that write files to disk (mirrors r2d2 DATA_ITEMS)
 DATA_ITEMS = {
     'analysis', 'bias_correction', 'diagnostic',
-    'feedback', 'forecast', 'media', 'observation'
+    'feedback', 'forecast', 'media', 'observation',
 }
 
-
-def get_data_store_index(cursor, data_store_name: str) -> int:
-    cursor.execute('SELECT data_store_index FROM data_store WHERE name = %s', (data_store_name,))
-    row = cursor.fetchone()
-    if row is None:
-        raise ValueError(f'Data store "{data_store_name}" not found in the database.')
-    return row['data_store_index']
+SCAN_FIELDNAMES = ['filepath', 'item', 'date', 'index', 'extension', 'size_bytes']
+ORPHAN_FIELDNAMES = ['filepath', 'item', 'date', 'index', 'extension', 'size_bytes', 'size_mb', 'size_gb']
 
 
-def get_item_index(cursor, item_name: str) -> int:
-    cursor.execute('SELECT item_index FROM item WHERE name = %s', (item_name,))
-    row = cursor.fetchone()
-    if row is None:
-        raise ValueError(f'Item "{item_name}" not found in the database.')
-    return row['item_index']
+# ---------------------------------------------------------------------------
+# Phase 1 – filesystem scan
+# ---------------------------------------------------------------------------
 
-
-def is_registered(cursor, item_index: int, data_index: int, data_store_index: int) -> bool:
-    cursor.execute(
-        'SELECT 1 FROM data_register '
-        'WHERE item_index = %s AND data_index = %s AND data_store_index = %s '
-        'LIMIT 1',
-        (item_index, data_index, data_store_index)
-    )
-    return cursor.fetchone() is not None
-
-
-def walk_data_store(basedir: str, data_store_name: str):
-    """Yield (filepath, item, date, index_str) for every leaf file under the data store root.
-
-    Expected directory structure:
-        <basedir>/<data_store_name>/<item>/<date>/<index>[.<ext>]
-    """
-    root = os.path.join(basedir, data_store_name)
+def scan_data_store(basedir: str, data_store: str, files_csv: str):
+    """Walk the data store and write every leaf file to files_csv."""
+    root = os.path.join(basedir, data_store)
     if not os.path.isdir(root):
         raise FileNotFoundError(f'Data store directory not found: {root}')
 
-    for item in os.scandir(root):
-        if not item.is_dir() or item.name not in DATA_ITEMS:
-            continue
-        item_name = item.name
+    logger.info(f'Scanning: {root}')
+    count = 0
 
-        for date_entry in os.scandir(item.path):
-            if not date_entry.is_dir():
-                continue
-            date_str = date_entry.name
-
-            for file_entry in os.scandir(date_entry.path):
-                if not file_entry.is_file():
-                    continue
-                # Index is the filename without extension
-                index_str = os.path.splitext(file_entry.name)[0]
-                yield file_entry.path, item_name, date_str, index_str
-
-
-def get_db_cursor():
-    """Return a dict-cursor connected to the r2d2 database using the same env vars as the server."""
-    import mysql.connector
-    connect_args = {
-        'user':     os.environ.get('MYSQL_USER', 'r2d2'),
-        'host':     os.environ.get('MYSQL_HOST', 'localhost'),
-        'database': os.environ.get('MYSQL_DATABASE', 'r2d2'),
-        'port':     int(os.environ.get('MYSQL_PORT', 3306)),
-    }
-    if 'MYSQL_PASSWORD' in os.environ:
-        connect_args['password'] = os.environ['MYSQL_PASSWORD']
-    conn = mysql.connector.connect(**connect_args)
-    return conn, conn.cursor(dictionary=True)
-
-
-def find_unregistered(basedir: str, data_store_name: str, output_csv: str):
-    logger.info(f'Connecting to database ...')
-    conn, cursor = get_db_cursor()
-
-    logger.info(f'Looking up data store: {data_store_name}')
-    data_store_index = get_data_store_index(cursor, data_store_name)
-
-    # Pre-load all item name -> item_index mappings for DATA_ITEMS
-    item_index_cache = {}
-    for item_name in DATA_ITEMS:
-        try:
-            item_index_cache[item_name] = get_item_index(cursor, item_name)
-        except ValueError:
-            logger.warning(f'Item "{item_name}" not found in DB — skipping.')
-
-    logger.info(f'Walking filesystem: {os.path.join(basedir, data_store_name)}')
-
-    unregistered = []
-    total_files = 0
-    total_unregistered = 0
-
-    for filepath, item_name, date_str, index_str in walk_data_store(basedir, data_store_name):
-        total_files += 1
-
-        if item_name not in item_index_cache:
-            continue
-
-        try:
-            data_index = int(index_str)
-        except ValueError:
-            logger.warning(f'Could not parse index from filename: {filepath}')
-            continue
-
-        if not is_registered(cursor, item_index_cache[item_name], data_index, data_store_index):
-            size_bytes = os.path.getsize(filepath)
-            unregistered.append({
-                'filepath':   filepath,
-                'item':       item_name,
-                'date':       date_str,
-                'index':      data_index,
-                'size_mb':    round(size_bytes / 1e6, 3),
-            })
-            total_unregistered += 1
-
-        if total_files % 10000 == 0:
-            logger.info(f'  Scanned {total_files} files, {total_unregistered} unregistered so far ...')
-
-    cursor.close()
-    conn.close()
-
-    # Summary
-    total_orphan_bytes = sum(r['size_bytes'] for r in unregistered)
-    logger.info(f'Scan complete: {total_files} total files, '
-                f'{total_unregistered} unregistered '
-                f'({total_orphan_bytes / 1e12:.3f} TB orphaned).')
-
-    # Write CSV
-    fieldnames = ['filepath', 'item', 'date', 'index', 'size_bytes', 'size_mb', 'size_gb']
-    with open(output_csv, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with open(files_csv, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=SCAN_FIELDNAMES)
         writer.writeheader()
-        writer.writerows(unregistered)
 
-    logger.info(f'Report written to: {output_csv}')
+        for item_entry in os.scandir(root):
+            if not item_entry.is_dir() or item_entry.name not in DATA_ITEMS:
+                continue
+            item_name = item_entry.name
 
+            for date_entry in os.scandir(item_entry.path):
+                if not date_entry.is_dir():
+                    continue
+                date_str = date_entry.name
+
+                for file_entry in os.scandir(date_entry.path):
+                    if not file_entry.is_file():
+                        continue
+                    base, ext = os.path.splitext(file_entry.name)
+                    try:
+                        index = int(base)
+                    except ValueError:
+                        logger.warning(f'Skipping unexpected filename: {file_entry.path}')
+                        continue
+                    writer.writerow({
+                        'filepath':   file_entry.path,
+                        'item':       item_name,
+                        'date':       date_str,
+                        'index':      index,
+                        'extension':  ext.lstrip('.'),
+                        'size_bytes': file_entry.stat().st_size,
+                    })
+                    count += 1
+                    if count % 10000 == 0:
+                        logger.info(f'  {count} files scanned ...')
+
+    logger.info(f'Scan complete: {count} files written to {files_csv}')
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 – check against r2d2 API
+# ---------------------------------------------------------------------------
+
+def fetch_registered_indices(item: str) -> set:
+    """Return the set of all data_index values currently registered in r2d2 for item."""
+    import r2d2
+    logger.info(f'  Fetching registered indices for item={item} ...')
+    results = r2d2.search(item=item, include_item_index=True)
+    index_key = f'{item}_index'
+    indices = {r[index_key] for r in results if index_key in r}
+    logger.info(f'    -> {len(indices)} registered entries')
+    return indices
+
+
+def check_orphans(files_csv: str, output_csv: str):
+    """Compare files_csv against r2d2 and write orphaned files to output_csv."""
+    with open(files_csv, newline='') as f:
+        rows = list(csv.DictReader(f))
+    logger.info(f'Loaded {len(rows)} files from {files_csv}')
+
+    # One API call per item type to bulk-fetch all registered indices
+    items_present = sorted({r['item'] for r in rows})
+    registered = {item: fetch_registered_indices(item) for item in items_present}
+
+    orphans = []
+    for row in rows:
+        item = row['item']
+        idx = int(row['index'])
+        if idx not in registered.get(item, set()):
+            size_bytes = int(row['size_bytes'])
+            orphans.append({
+                'filepath':   row['filepath'],
+                'item':       item,
+                'date':       row['date'],
+                'index':      idx,
+                'extension':  row['extension'],
+                'size_bytes': size_bytes,
+                'size_mb':    round(size_bytes / 1e6, 3),
+                'size_gb':    round(size_bytes / 1e9, 6),
+            })
+
+    total_bytes = sum(r['size_bytes'] for r in orphans)
+    logger.info(
+        f'Found {len(orphans)} orphaned files '
+        f'({total_bytes / 1e12:.3f} TB) out of {len(rows)} total.'
+    )
+
+    with open(output_csv, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=ORPHAN_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(orphans)
+
+    logger.info(f'Orphan report written to: {output_csv}')
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
         description='Find unregistered (orphaned) files in an r2d2 local data store.'
     )
-    parser.add_argument(
-        '--basedir', required=True,
-        help='Root directory of the data store (e.g. /css/jcsda/s2127)'
-    )
-    parser.add_argument(
-        '--data-store', required=True,
-        help='Name of the data store (e.g. r2d2-experiments-nccs)'
-    )
-    parser.add_argument(
-        '--output', default='unregistered_files.csv',
-        help='Path to output CSV file (default: unregistered_files.csv)'
-    )
+    parser.add_argument('--scan', action='store_true',
+                        help='Phase 1: walk the filesystem and write a files CSV.')
+    parser.add_argument('--check', action='store_true',
+                        help='Phase 2: check files CSV against r2d2 API and write orphans CSV.')
+    parser.add_argument('--basedir',
+                        help='Root directory of the data store (required for --scan).')
+    parser.add_argument('--data-store',
+                        help='Name of the data store directory (required for --scan).')
+    parser.add_argument('--files-csv', default='files.csv',
+                        help='Files CSV written by --scan / read by --check. Default: files.csv')
+    parser.add_argument('--output', default='orphans.csv',
+                        help='Orphans output CSV (used by --check). Default: orphans.csv')
     args = parser.parse_args()
 
-    basedir = os.path.expanduser(args.basedir)
-    if not os.path.isdir(basedir):
-        logger.error(f'basedir does not exist: {basedir}')
-        sys.exit(1)
+    if not args.scan and not args.check:
+        parser.error('Specify at least one of --scan or --check.')
 
-    try:
-        find_unregistered(
-            basedir=basedir,
-            data_store_name=args.data_store,
-            output_csv=args.output,
-        )
-    except (ValueError, FileNotFoundError) as e:
-        logger.error(str(e))
-        sys.exit(1)
+    if args.scan:
+        if not args.basedir or not args.data_store:
+            parser.error('--basedir and --data-store are required when using --scan.')
+        basedir = os.path.expanduser(args.basedir)
+        if not os.path.isdir(basedir):
+            logger.error(f'basedir does not exist: {basedir}')
+            sys.exit(1)
+        try:
+            scan_data_store(basedir, args.data_store, args.files_csv)
+        except FileNotFoundError as e:
+            logger.error(str(e))
+            sys.exit(1)
+
+    if args.check:
+        if not os.path.isfile(args.files_csv):
+            logger.error(f'Files CSV not found: {args.files_csv}  (run --scan first)')
+            sys.exit(1)
+        check_orphans(args.files_csv, args.output)
 
 
 if __name__ == '__main__':
