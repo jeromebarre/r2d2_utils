@@ -100,25 +100,42 @@ def scan_data_store(basedir: str, data_store: str, files_csv: str, symlinks_csv:
                             logger.warning(f'Skipping unexpected filename: {file_entry.path}')
                             continue
 
+                        try:
+                            is_symlink = file_entry.is_symlink()
+                        except OSError:
+                            is_symlink = False
+
                         # Symlink (live or dangling) → symlinks CSV only
-                        if file_entry.is_symlink():
+                        if is_symlink:
                             symlink_count += 1
                             if symlink_writer:
+                                try:
+                                    target = os.readlink(file_entry.path)
+                                except OSError:
+                                    target = ''
+                                try:
+                                    target_exists = file_entry.is_file(follow_symlinks=True)
+                                except OSError:
+                                    target_exists = ''
                                 symlink_writer.writerow({
                                     'filepath':      file_entry.path,
                                     'item':          item_name,
                                     'date':          date_str,
                                     'index':         index,
                                     'extension':     ext.lstrip('.'),
-                                    'target':        os.readlink(file_entry.path),
-                                    'target_exists': file_entry.is_file(follow_symlinks=True),
+                                    'target':        target,
+                                    'target_exists': target_exists,
                                 })
                             continue
 
                         # Regular file only
-                        if not file_entry.is_file(follow_symlinks=False):
+                        try:
+                            if not file_entry.is_file(follow_symlinks=False):
+                                continue
+                            size_bytes = file_entry.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            logger.warning(f'Cannot stat, skipping: {file_entry.path}')
                             continue
-                        size_bytes = file_entry.stat(follow_symlinks=False).st_size
                         writer.writerow({
                             'filepath':   file_entry.path,
                             'item':       item_name,
