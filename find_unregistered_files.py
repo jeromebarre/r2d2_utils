@@ -195,21 +195,23 @@ def fetch_registered_indices(item: str, retries: int = 3, backoff: float = 15.0,
                     wait *= 2
         raise last_exc
 
-    # --- Try bulk call first ---
-    logger.info(f'  Fetching indices for item={item} (bulk) ...')
-    try:
-        results = _search_with_retry({'item': item, 'include_item_index': True})
-        indices = {r[index_key] for r in results if index_key in r}
-        logger.info(f'    -> {len(indices)} registered entries')
-        return indices
-    except Exception as e:
-        if item not in MEMBER_ITEMS:
+    # --- For forecast, skip bulk and go straight to chunked ---
+    if item in MEMBER_ITEMS:
+        logger.info(f'  item={item}: skipping bulk fetch, using per-member chunking directly ...')
+    else:
+        # --- Try bulk call first ---
+        logger.info(f'  Fetching indices for item={item} (bulk) ...')
+        try:
+            results = _search_with_retry({'item': item, 'include_item_index': True})
+            indices = {r[index_key] for r in results if index_key in r}
+            logger.info(f'    -> {len(indices)} registered entries')
+            return indices
+        except Exception as e:
             logger.error(
                 f'Bulk fetch failed for item={item} and no chunking strategy available. '
                 f'Files of this type will be absent from the orphan report. Error: {e}'
             )
             return set()
-        logger.warning(f'  Bulk fetch failed for item={item}, falling back to per-member chunking ...')
 
     # --- Chunked fallback: one call per member value ---
     member_values = [-9999] + list(range(0, max_member + 1))
