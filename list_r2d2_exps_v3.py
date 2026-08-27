@@ -112,7 +112,7 @@ for user in list_user:
     collect_experiments_for_user(user, csv_rows)
 
 # Write to CSV
-output_file = "r2d2_experiments_all_users.csv"
+output_file = "r2d2_experiments.csv"
 with open(output_file, "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerows(csv_rows)

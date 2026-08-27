@@ -11,22 +11,13 @@ Two-phase approach:
 
 Usage:
     # Step 1 – scan the filesystem (run once):
-    python find_unregistered_files.py --scan \\
-        --basedir /css/jcsda/s2127 \\
-        --data-store r2d2-experiments-nccs \\
-        --files-csv files_nccs.csv
+    python find_unregistered_files.py --scan --basedir /css/jcsda/s2127 --data-store r2d2-experiments-nccs --files-csv files_nccs.csv
 
     # Step 2 – check against r2d2:
-    python find_unregistered_files.py --check \\
-        --files-csv files_nccs.csv \\
-        --output orphans_nccs.csv
+    python find_unregistered_files.py --check --files-csv files_nccs.csv --output orphans_nccs.csv
 
     # Or run both phases in one go:
-    python find_unregistered_files.py --scan --check \\
-        --basedir /css/jcsda/s2127 \\
-        --data-store r2d2-experiments-nccs \\
-        --files-csv files_nccs.csv \\
-        --output orphans_nccs.csv
+    python find_unregistered_files.py --scan --check --basedir /css/jcsda/s2127 --data-store r2d2-experiments-nccs --files-csv files_nccs.csv --output orphans_nccs.csv
 
 File path structure on disk:
     <basedir>/<data_store>/<item>/<date>/<index>.<extension>

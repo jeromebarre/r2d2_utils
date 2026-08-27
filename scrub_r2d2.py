@@ -2,9 +2,7 @@ import r2d2
 
 
 list_exp = [
-        '4d742a',
-        '236be4',
-        '46411e'
+        '684e02',
         ]
 
 for exp in list_exp:
