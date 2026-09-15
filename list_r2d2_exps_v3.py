@@ -14,20 +14,51 @@ R2D2_DB_ROOTS = {
 r2d2_db_root = R2D2_DB_ROOTS[compute_host]
 
 
+# Some installations of r2d2 do not support the `include_item_index` search
+# option, which is required to reconstruct on-disk file paths (and therefore
+# file sizes). We detect support once at runtime and fall back to just
+# counting files (without sizes) when it isn't available.
+_supports_item_index = None
+
+
+def _search_files(model, experiment, item):
+    """Run r2d2.search for the given item, falling back to a plain search
+    (no index) if the installed r2d2 version doesn't support include_item_index."""
+    global _supports_item_index
+
+    search_kwargs = {'experiment': experiment, 'item': item}
+    if item != "feedback":
+        search_kwargs['model'] = model
+
+    if _supports_item_index is not False:
+        try:
+            files = r2d2.search(**search_kwargs, include_item_index=True)
+            _supports_item_index = True
+            return files, True
+        except TypeError:
+            _supports_item_index = False
+            print("Warning: this r2d2 version does not support 'include_item_index'; "
+                  "file sizes will be reported as N/A.")
+
+    return r2d2.search(**search_kwargs), False
+
+
 def get_experiment_file_info(model, experiment, item):
-    """Return count and total size of files for a given experiment and item."""
+    """Return count and total size (in bytes) of files for a given experiment
+    and item. Size is None if the installed r2d2 version doesn't support
+    looking up item indexes (needed to locate files on disk)."""
     r2d2_db = r2d2_db_root
 
-    if item == "feedback":
-        files = r2d2.search(experiment=experiment, item=item, include_item_index=True)
-    else:
-        files = r2d2.search(model=model, experiment=experiment, item=item, include_item_index=True)
+    files, has_index = _search_files(model, experiment, item)
+
+    if not has_index:
+        return len(files), None
 
     total_size = 0
     for f in files:
         wstart = f.get('date')
         ext = f.get('file_extension', 'nc4')
-        index = str(f.get(f"{item}_index"))
+        index = f.get(f"{item}_index")
         if wstart is None:
             continue
         if index is None:
@@ -37,7 +68,7 @@ def get_experiment_file_info(model, experiment, item):
         if path and os.path.exists(path):
             total_size += os.path.getsize(path)
             #print("####### size add: ", total_size)
-    return len(files), total_size  # convert to MB
+    return len(files), total_size
 
 
 def collect_experiments_for_user(user, csv_rows):
@@ -75,11 +106,11 @@ def collect_experiments_for_user(user, csv_rows):
             lifetime,
             members,
             fc_count,
-            f"{fc_size:.2f}",
+            f"{fc_size:.2f}" if fc_size is not None else "N/A",
             an_count,
-            f"{an_size:.2f}",
+            f"{an_size:.2f}" if an_size is not None else "N/A",
             fb_count,
-            f"{fb_size:.2f}"
+            f"{fb_size:.2f}" if fb_size is not None else "N/A"
         ])
         #print(csv_rows)
 
