@@ -4,18 +4,18 @@ import os
 import csv
 
 # Select the compute host here
-compute_host = 'discover-mil-gnu'
-# compute_host = 'discover-gmao-intel'
+#compute_host = 'discover-mil-gnu'
+compute_host = 'discover-gmao-intel'
 
 R2D2_DB_ROOTS = {
-    'discover-mil-gnu':   '/css/jcsda/s2127/r2d2-experiments-nccs/',
-    'discover-gmao-intel': '/discover/nobackup/projects/gmao/swell/r2d2-experiments/',
+    #'discover-mil-gnu':   '/css/jcsda/s2127/r2d2-experiments-nccs/',
+    'discover-gmao-intel': '/discover/nobackup/projects/gmao/swell/r2d2-experiments-nccs-gmao/',
 }
 r2d2_db_root = R2D2_DB_ROOTS[compute_host]
 
 
 def get_experiment_file_info(model, experiment, item):
-    """Return count and total size (in GB) of files for a given experiment and item."""
+    """Return count and total size of files for a given experiment and item."""
     r2d2_db = r2d2_db_root
 
     if item == "feedback":
@@ -33,9 +33,11 @@ def get_experiment_file_info(model, experiment, item):
         if index is None:
             continue
         path = os.path.join(r2d2_db, item, wstart, f"{index}.{ext}")
+        #print(path)
         if path and os.path.exists(path):
             total_size += os.path.getsize(path)
-    return len(files), total_size / 1e9  # convert to GB
+            #print("####### size add: ", total_size)
+    return len(files), total_size  # convert to MB
 
 
 def collect_experiments_for_user(user, csv_rows):
@@ -79,7 +81,7 @@ def collect_experiments_for_user(user, csv_rows):
             fb_count,
             f"{fb_size:.2f}"
         ])
-        print(csv_rows)
+        #print(csv_rows)
 
 
 # ------------------------------
@@ -95,27 +97,24 @@ def collect_experiments_for_user(user, csv_rows):
 #    'vahl', 'vandenb', 'weiwilliam1987'
 #]
 
-list_user = ['barre']
-
-csv_rows = []
-
-# Header row
-csv_rows.append([
-    "User", "Experiment Name", "Lifetime", "Members",
-    "FC Files", "FC Size (GB)",
-    "AN Files", "AN Size (GB)",
-    "FB Files", "FB Size (GB)"
-])
+list_user = ['barre'] #['maryamao', 'dardag', 'vshah', 'barre', 'fgoktas', 'gmao-user']
 
 # Collect all users' experiments
 for user in list_user:
+    csv_rows = []
+    csv_rows.append([
+        "User", "Experiment Name", "Lifetime", "Members",
+        "FC Files", "FC Size",
+        "AN Files", "AN Size",
+        "FB Files", "FB Size"
+    ])
     collect_experiments_for_user(user, csv_rows)
 
-# Write to CSV
-output_file = "r2d2_experiments.csv"
-with open(output_file, "w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerows(csv_rows)
+    # Write to CSV
+    output_file = f"r2d2_experiments_{user}.csv"
+    with open(output_file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(csv_rows)
 
-print(f"\nCSV file written to: {output_file}\n")
+    print(f"\nCSV file written to: {output_file}\n")
 
